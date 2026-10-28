@@ -16,5 +16,11 @@
     "hint": "达到条数立即合并回复",
     "type": "int",
     "default": 10
+  },
+  "command_prefixes": {
+    "description": "指令豁免前缀（列表）",
+    "hint": "以这些前缀开头的消息直通不等待；留空则自动跟随平台唤醒前缀（默认 / ）",
+    "type": "list",
+    "default": ["/"]
   }
 }
