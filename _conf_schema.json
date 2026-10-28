@@ -1,0 +1,20 @@
+{
+  "merge_window_seconds": {
+    "description": "等待窗口（秒）：两条私聊消息之间的最大间隔",
+    "hint": "每来一条新消息倒计时重置；间隔超过此值即视为说完、合并回复。建议 6~12",
+    "type": "int",
+    "default": 9
+  },
+  "max_hold_seconds": {
+    "description": "单次聚合最长等待（秒）",
+    "hint": "防止连发不停导致一直憋着不回，达到上限立即合并回复",
+    "type": "int",
+    "default": 30
+  },
+  "max_buffer_messages": {
+    "description": "单次聚合最多合并条数",
+    "hint": "达到条数立即合并回复",
+    "type": "int",
+    "default": 10
+  }
+}
