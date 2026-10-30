@@ -1,6 +1,6 @@
 """大肥鱼·私聊消息聚合插件
 
-私聊连发多条时不再逐条抢答：
+私聊连发多条时不再逐条抢答；附带私聊分段回复（框架对私聊默认路径不分段，这里补上）：
 - 第一条消息进入等待窗（默认12秒），期间每来一条就重置倒计时
 - 窗口耗尽（用户停手超过窗口时长）后，把所有消息合并成一条交给正常管线，只回一次
 - 命令消息（默认 / ! 开头，可配置）直通不等待——按消息链原文判定
@@ -10,9 +10,12 @@
 """
 
 import asyncio
+import random
+import re
 
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
 
 try:
@@ -24,8 +27,8 @@ except ImportError:  # 版本变动时的兜底（提示注入失败不影响消
 @register(
     "astrbot_plugin_dafeiyu_merge",
     "29624",
-    "私聊连发消息聚合：等待窗口内合并成一条再回复，指令豁免，合并轮简短回应",
-    "1.1.0",
+    "私聊连发消息聚合+分段回复：等待窗口合并、指令豁免、合并轮简短回应、私聊分段",
+    "1.2.0",
 )
 class DafeiyuMergePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -47,6 +50,16 @@ class DafeiyuMergePlugin(Star):
         self._batches: dict = {}
         # umo -> 刚冲刷的合并条数（on_llm_request 消费一次即弹）
         self._merge_counts: dict = {}
+        # 私聊分段回复（v1.2.0）：框架对私聊默认 LLM 路径不分段，这里补
+        self.seg_on = bool(self.config.get("seg_enabled", True))
+        raw_iv = str(self.config.get("seg_interval", "1.2,3.0"))
+        try:
+            iv = [float(t) for t in raw_iv.replace(" ", "").split(",")]
+            if len(iv) != 2 or iv[0] > iv[1] or iv[0] < 0:
+                raise ValueError
+        except Exception:
+            iv = [1.2, 3.0]
+        self.seg_iv = iv
 
     def _command_prefixes(self) -> tuple:
         prefixes = [str(p) for p in (self.command_prefixes_cfg or []) if str(p)]
@@ -160,3 +173,55 @@ class DafeiyuMergePlugin(Star):
             logger.info(f"[私聊聚合] 合并轮紧凑提示已注入（{n} 条）")
         except Exception:
             logger.warning("[私聊聚合] 紧凑提示注入失败（不影响消息处理）", exc_info=True)
+
+    # ---------- 私聊分段回复（v1.2.0） ----------
+
+    _SEG_PAT = r".*?(?:\r?\n+|[。？！~…]+)|.+$"
+
+    @filter.on_decorating_result()
+    async def segment_private_reply(self, event: AstrMessageEvent, *args, **kwargs):
+        """框架的分段回复对私聊默认 LLM 路径不生效（实测单条长文本整发），
+        这里在私聊范围内补齐：LLM 回复按句切分、逐条发送、条间随机间隔。
+        只动 LLM 结果（is_model_result），指令/工具消息原样走框架。"""
+        if not self.seg_on:
+            return
+        try:
+            if "FriendMessage" not in event.unified_msg_origin:
+                return
+            result = event.get_result()
+            if not result or not getattr(result, "chain", None):
+                return
+            if not result.is_model_result():
+                return
+            plains = [c for c in result.chain if isinstance(c, Plain)]
+            if not plains:
+                return
+            text = "\n".join((p.text or "") for p in plains).strip()
+            if not text:
+                return
+            segs = [
+                t.strip()
+                for t in re.findall(self._SEG_PAT, text, re.DOTALL | re.MULTILINE)
+                if t.strip()
+            ]
+            if len(segs) <= 1:
+                return
+            others = [c for c in result.chain if not isinstance(c, Plain)]
+            result.chain = []  # 清空：respond 阶段跳过，避免整条重发
+            for i, seg in enumerate(segs):
+                if i:
+                    await asyncio.sleep(random.uniform(*self.seg_iv))
+                try:
+                    await event.send(MessageChain().message(seg))
+                except Exception:
+                    logger.warning(f"[私聊聚合] 分段第{i + 1}条发送失败", exc_info=True)
+            if others:  # 表情包等非文本组件放最后单独一条
+                try:
+                    chain = MessageChain()
+                    chain.chain = list(others)
+                    await event.send(chain)
+                except Exception:
+                    logger.warning("[私聊聚合] 分段尾部组件发送失败", exc_info=True)
+            logger.info(f"[私聊聚合] 分段回复：{len(segs)} 条（间隔{self.seg_iv[0]}~{self.seg_iv[1]}s）")
+        except Exception:
+            logger.warning("[私聊聚合] 分段处理异常（回退框架整发需结果未清空）", exc_info=True)
