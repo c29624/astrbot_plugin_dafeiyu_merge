@@ -1,9 +1,11 @@
 """大肥鱼·私聊消息聚合插件
 
 私聊连发多条时不再逐条抢答：
-- 第一条消息进入等待窗（默认9秒），期间每来一条就重置倒计时
+- 第一条消息进入等待窗（默认12秒），期间每来一条就重置倒计时
 - 窗口耗尽（用户停手超过窗口时长）后，把所有消息合并成一条交给正常管线，只回一次
-- 命令消息（默认 / 开头，可配置）直通不等待
+- 命令消息（默认 / ! 开头，可配置）直通不等待——按消息链原文判定
+  （框架 waking_check 会先剥掉 message_str 的唤醒前缀，直接读 message_str 会误判）
+- 连发合并轮随 LLM 请求一次性注入"简短回应"提示（可关）——治"你发两条她回六七条"
 - 群聊消息直接放行，完全不受影响
 """
 
@@ -13,23 +15,38 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 
+try:
+    from astrbot.core.agent.message import TextPart
+except ImportError:  # 版本变动时的兜底（提示注入失败不影响消息处理）
+    TextPart = None
+
 
 @register(
     "astrbot_plugin_dafeiyu_merge",
     "29624",
-    "私聊连发消息聚合：等待窗口内合并成一条再回复，指令豁免",
-    "1.0.1",
+    "私聊连发消息聚合：等待窗口内合并成一条再回复，指令豁免，合并轮简短回应",
+    "1.1.0",
 )
 class DafeiyuMergePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         self.config = config or {}
-        self.window = float(self.config.get("merge_window_seconds", 9))
+        self.window = float(self.config.get("merge_window_seconds", 12))
         self.max_hold = float(self.config.get("max_hold_seconds", 30))
         self.max_buffer = int(self.config.get("max_buffer_messages", 10))
-        self.command_prefixes_cfg = self.config.get("command_prefixes", ["/"])
+        self.command_prefixes_cfg = self.config.get("command_prefixes", ["/", "!"])
+        self.compact_on = bool(self.config.get("merged_compact_enabled", True))
+        self.compact_tpl = str(
+            self.config.get(
+                "merged_compact_template",
+                "[系统信息-私聊聚合] 对方刚连发了 {count} 条消息，你已一次性全部看到。"
+                "像真人回消息那样简短：一两句就好，别长篇大论。",
+            )
+        )
         # unified_msg_origin -> {"events": [...], "signal": asyncio.Event}
         self._batches: dict = {}
+        # umo -> 刚冲刷的合并条数（on_llm_request 消费一次即弹）
+        self._merge_counts: dict = {}
 
     def _command_prefixes(self) -> tuple:
         prefixes = [str(p) for p in (self.command_prefixes_cfg or []) if str(p)]
@@ -46,6 +63,17 @@ class DafeiyuMergePlugin(Star):
                 prefixes = []
         return tuple(prefixes) or ("/",)
 
+    def _chain_head_text(self, event: AstrMessageEvent) -> str:
+        """消息链第一个 Plain 的原文。框架会剥掉 message_str 的唤醒前缀（如 /help → help），
+        指令豁免必须看链原文，否则私聊指令会被误扣窗口"""
+        try:
+            for comp in (event.message_obj.message or []):
+                if type(comp).__name__ == "Plain":
+                    return (getattr(comp, "text", "") or "").lstrip()
+        except Exception:
+            pass
+        return (event.message_str or "").strip()
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=100)
     async def on_private_message(self, event: AstrMessageEvent):
         umo = event.unified_msg_origin
@@ -53,7 +81,10 @@ class DafeiyuMergePlugin(Star):
             return  # 只管私聊，群聊原样放行
 
         text = (event.message_str or "").strip()
-        if text.startswith(self._command_prefixes()):
+        head = self._chain_head_text(event)
+        if text.startswith(self._command_prefixes()) or head.startswith(
+            self._command_prefixes()
+        ):
             return  # 指令直通，不进批次
 
         batch = self._batches.get(umo)
@@ -98,6 +129,7 @@ class DafeiyuMergePlugin(Star):
                         texts.append(t)
                 merged.message_obj.message = chain
                 merged.message_str = "\n".join(texts)
+                self._merge_counts[umo] = len(events)
                 logger.info(
                     f"[私聊聚合] 合并 {len(events)} 条消息（窗口{self.window}s），一次性回复"
                 )
@@ -106,3 +138,25 @@ class DafeiyuMergePlugin(Star):
             if self._batches.get(umo) is batch:
                 self._batches.pop(umo, None)
         # 故意不调用 stop_event：合并后的首条事件继续走正常管线（人设/记忆/LLM）
+
+    @filter.on_llm_request()
+    async def on_llm_request(self, event: AstrMessageEvent, req=None):
+        """合并轮的紧凑提示：只在刚发生合并（≥2条）的下一次 LLM 请求注入一次，
+        mark_as_temp 不进历史——她平时单条消息的回复风格不受影响"""
+        try:
+            if TextPart is None or req is None:
+                return
+            umo = event.unified_msg_origin
+            if "FriendMessage" not in umo:
+                return
+            n = self._merge_counts.pop(umo, 0)
+            if n < 2 or not self.compact_on or not self.compact_tpl:
+                return
+            try:
+                hint = self.compact_tpl.format(count=n)
+            except Exception:
+                hint = self.compact_tpl
+            req.extra_user_content_parts.append(TextPart(text=hint).mark_as_temp())
+            logger.info(f"[私聊聚合] 合并轮紧凑提示已注入（{n} 条）")
+        except Exception:
+            logger.warning("[私聊聚合] 紧凑提示注入失败（不影响消息处理）", exc_info=True)

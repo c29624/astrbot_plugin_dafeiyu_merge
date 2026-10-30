@@ -1,9 +1,9 @@
 {
   "merge_window_seconds": {
     "description": "等待窗口（秒）：两条私聊消息之间的最大间隔",
-    "hint": "每来一条新消息倒计时重置；间隔超过此值即视为说完、合并回复。建议 6~12",
+    "hint": "每来一条新消息倒计时重置；间隔超过此值即视为说完、合并回复。调大→更容易接住慢一句的连发（代价：单条消息也要等这么久才开始回）。建议 8~15",
     "type": "int",
-    "default": 9
+    "default": 12
   },
   "max_hold_seconds": {
     "description": "单次聚合最长等待（秒）",
@@ -21,6 +21,20 @@
     "description": "指令豁免前缀（列表）",
     "hint": "以这些前缀开头的消息直通不等待；留空则自动跟随平台唤醒前缀（默认 / ）",
     "type": "list",
-    "default": ["/"]
+    "default": [
+      "/"
+    ]
+  },
+  "merged_compact_enabled": {
+    "description": "合并轮简短回应",
+    "hint": "连发合并成一次回复的那轮，给模型注入一次性提示\"对方连发N条，一两句简短回\"——治\"你发两条她回六七条\"。关=合并后照常长回复",
+    "type": "bool",
+    "default": true
+  },
+  "merged_compact_template": {
+    "description": "简短回应提示模板",
+    "hint": "只在合并轮（≥2条）注入一次、不进对话历史。变量 {count}=合并条数",
+    "type": "text",
+    "default": "[系统信息-私聊聚合] 对方刚连发了 {count} 条消息，你已一次性全部看到。像真人回消息那样简短：一两句就好，别长篇大论。"
   }
 }

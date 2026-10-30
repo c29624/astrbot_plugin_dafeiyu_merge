@@ -1,6 +1,6 @@
 name: astrbot_plugin_dafeiyu_merge
 display_name: 私聊聚合
 desc: 私聊连发消息合并成一条再回复。滑动等待窗（默认9秒，每条新消息重置倒计时），/开头指令豁免直通，群聊完全不受影响。
-version: 1.0.1
+version: 1.1.0
 author: "29624"
 repo: https://github.com/c29624/astrbot_plugin_dafeiyu_merge
