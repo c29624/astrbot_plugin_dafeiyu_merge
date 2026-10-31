@@ -54,7 +54,7 @@ https://github.com/c29624/astrbot_plugin_dafeiyu_merge
 ## 生态搭配（同一作者的配套插件）
 
 - [astrbot_plugin_dafeiyu_sleep · 随机睡觉](https://github.com/c29624/astrbot_plugin_dafeiyu_sleep)——作息演出核心：随机入睡/起床、睡眠期守门缓冲、晨间冲刷（夜里消息早上一起"翻手机"）；与本插件分工：它管睡觉和冲刷，本插件管私聊输入聚合与分段发送
-- [astrbot_plugin_dafeiyu_dm · 主动私聊](https://github.com/c29624/astrbot_plugin_dafeiyu_dm)——让她主动来找你：晨起/睡前/随机想念，读睡觉插件的作息状态；本插件的分段发送与它同源同款
+- [astrbot_plugin_dafeiyu_dm · 主动私聊——能调工具](https://github.com/c29624/astrbot_plugin_dafeiyu_dm)——让她主动来找你：晨起/睡前/随机想念，读睡觉插件的作息状态，还能挂任意 llm 工具（点歌/画图…）；本插件的分段发送与它同源同款
 
 ## 更新记录
 
