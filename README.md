@@ -51,6 +51,11 @@ https://github.com/c29624/astrbot_plugin_dafeiyu_merge
 
 简短回应走 `on_llm_request` 的 `extra_user_content_parts`（`mark_as_temp`）：只在刚发生合并的会话下一次请求注入一次，不进历史、不影响前缀缓存。
 
+## 生态搭配（同一作者的配套插件）
+
+- [astrbot_plugin_dafeiyu_sleep · 随机睡觉](https://github.com/c29624/astrbot_plugin_dafeiyu_sleep)——作息演出核心：随机入睡/起床、睡眠期守门缓冲、晨间冲刷（夜里消息早上一起"翻手机"）；与本插件分工：它管睡觉和冲刷，本插件管私聊输入聚合与分段发送
+- [astrbot_plugin_dafeiyu_dm · 主动私聊](https://github.com/c29624/astrbot_plugin_dafeiyu_dm)——让她主动来找你：晨起/睡前/随机想念，读睡觉插件的作息状态；本插件的分段发送与它同源同款
+
 ## 更新记录
 
 - **1.2.0** 新增**私聊分段回复**：框架的分段回复功能对私聊默认 LLM 路径不生效（实测多句长回复整条发出）。本插件在私聊范围内补齐——LLM 回复按句末标点/换行切分、逐条发送、条间随机间隔（默认 1.2~3.0 秒，可配）；表情包等非文本组件放最后单独一条；指令/工具消息不走此逻辑；群聊不受影响。开关 `seg_enabled`
