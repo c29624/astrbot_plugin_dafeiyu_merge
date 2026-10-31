@@ -26,7 +26,7 @@ except ImportError:  # 版本变动时的兜底（提示注入失败不影响消
 
 @register(
     "astrbot_plugin_dafeiyu_merge",
-    "29624",
+    "c29624",
     "私聊连发消息聚合+分段回复：等待窗口合并、指令豁免、合并轮简短回应、私聊分段",
     "1.2.0",
 )
