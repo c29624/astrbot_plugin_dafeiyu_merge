@@ -6,6 +6,8 @@
 - 命令消息（默认 / ! 开头，可配置）直通不等待——按消息链原文判定
   （框架 waking_check 会先剥掉 message_str 的唤醒前缀，直接读 message_str 会误判）
 - 连发合并轮随 LLM 请求一次性注入"简短回应"提示（可关）——治"你发两条她回六七条"
+- v1.3.0：分段切分括号感知——颜文字 (・_・。)/(？_？) 内部的句末标点不再把脸劈成两段；
+  每次私聊请求注入"回复长度纪律"（可关）——治模型被上下文里自己往日长回复锚定
 - 群聊消息直接放行，完全不受影响
 """
 
@@ -23,12 +25,26 @@ try:
 except ImportError:  # 版本变动时的兜底（提示注入失败不影响消息处理）
     TextPart = None
 
+DEFAULT_LEN_HINT = (
+    "[回复长度·私聊] 像随手回消息，别像写作文：平常一两句短句就够，"
+    "只有对方明确想深聊或事情复杂才多说几条；（）动作描写一条回复最多带一个，"
+    "不是每条都要；宁可短，别刷屏。"
+)
+
+_BRACKETS = "()（）"
+
+
+def _bracket_near(text: str, i: int, j: int) -> bool:
+    """标点串 [i,j) 前后各 2 字符内是否有括号——有则视作颜文字的组成部分"""
+    return any(c in _BRACKETS for c in text[max(0, i - 2):i]) or \
+        any(c in _BRACKETS for c in text[j:j + 2])
+
 
 @register(
     "astrbot_plugin_dafeiyu_merge",
     "c29624",
-    "私聊连发消息聚合+分段回复：等待窗口合并、指令豁免、合并轮简短回应、私聊分段",
-    "1.2.0",
+    "私聊连发聚合+分段回复（括号感知不劈颜文字）+回复长度纪律注入",
+    "1.3.0",
 )
 class DafeiyuMergePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -60,6 +76,14 @@ class DafeiyuMergePlugin(Star):
         except Exception:
             iv = [1.2, 3.0]
         self.seg_iv = iv
+        # v1.3.0 回复长度纪律：每请求注入（不进历史），治上下文长回复范文的自锚定
+        self.len_on = bool(self.config.get("seg_len_enabled", True))
+        _lh = self.config.get("seg_len_hint")
+        self.len_hint = (
+            DEFAULT_LEN_HINT if _lh is None or not str(_lh).strip() else str(_lh).strip()
+        )
+        # 已知脸索引缓存：(faces 的 _pool_of 对象, first_char → [脸按长度降序])
+        self._face_index_cache = None
 
     def _command_prefixes(self) -> tuple:
         prefixes = [str(p) for p in (self.command_prefixes_cfg or []) if str(p)]
@@ -162,6 +186,11 @@ class DafeiyuMergePlugin(Star):
             umo = event.unified_msg_origin
             if "FriendMessage" not in umo:
                 return
+            # v1.3.0 长度纪律：每次私聊请求都带（mark_as_temp 不进历史）。人设里的短句
+            # 规则是软的——上下文里躺着自己几十条长回复时，模型照"范文"学不照规则学
+            # （与颜文字锚定同病）；这条每请求在场，跟人设解耦
+            if self.len_on and self.len_hint:
+                req.extra_user_content_parts.append(TextPart(text=self.len_hint).mark_as_temp())
             n = self._merge_counts.pop(umo, 0)
             if n < 2 or not self.compact_on or not self.compact_tpl:
                 return
@@ -174,9 +203,77 @@ class DafeiyuMergePlugin(Star):
         except Exception:
             logger.warning("[私聊聚合] 紧凑提示注入失败（不影响消息处理）", exc_info=True)
 
-    # ---------- 私聊分段回复（v1.2.0） ----------
+    # ---------- 私聊分段回复（v1.2.0；v1.3.0 切分护脸） ----------
 
-    _SEG_PAT = r".*?(?:\r?\n+|[。？！~…]+)|.+$"
+    def _face_index(self):
+        """已知脸索引（软耦合 faces 插件，与 dm 取风格注入同款通道）：命中即整脸
+        原子跳过，1558 张词典脸零劈（含启发式够不着的装饰脸。・゚・(ノД`)・゚・。、
+        鱼脸 ω~~~＞°))))彡、词脸组合 おやすみ！(˘ω˘)zzz）。faces 没装 → None，
+        走括号深度+贴身启发式"""
+        try:
+            meta = self.context.get_registered_star("astrbot_plugin_dafeiyu_faces")
+            pools = getattr(getattr(meta, "star_cls", None), "_pool_of", None)
+        except Exception:
+            pools = None
+        if not isinstance(pools, dict) or not pools:
+            return None
+        if self._face_index_cache and self._face_index_cache[0] is pools:
+            return self._face_index_cache[1]
+        idx = {}
+        for f in pools:
+            if f:
+                idx.setdefault(f[:1], []).append(f)
+        for v in idx.values():
+            v.sort(key=len, reverse=True)
+        self._face_index_cache = (pools, idx)
+        return idx
+
+    def _split_segments(self, text: str) -> list:
+        """按句切分：换行/句末标点串（。？！~…）后切一刀。三层护脸：
+        ①faces 已知脸整脸原子跳过；②括号（）()内的标点不切；③括号没闭合时
+        后半不切（宁可不切，不劈脸）。旧正则不认括号，(・_・。)/(？_？)/(~_~)
+        这类脸内部带标点的会被拦腰劈成两段气泡"""
+        idx = self._face_index()
+        segs, buf, depth = [], [], 0
+        i, n = 0, len(text)
+        while i < n:
+            if idx:
+                hit = next(
+                    (f for f in idx.get(text[i], ()) if len(f) > 1 and text.startswith(f, i)),
+                    None,
+                )
+                if hit:
+                    buf.append(hit)
+                    i += len(hit)
+                    continue
+            ch = text[i]
+            if ch in "(（":
+                depth += 1
+                buf.append(ch)
+                i += 1
+            elif ch in ")）":
+                depth = max(0, depth - 1)
+                buf.append(ch)
+                i += 1
+            elif depth == 0 and (ch in "。？！~…" or ch in "\r\n"):
+                j = i + 1
+                while j < n and text[j] in ("。？！~…" if ch not in "\r\n" else "\r\n"):
+                    j += 1
+                if ch in "。？！~…" and _bracket_near(text, i, j):
+                    # 贴身保护：标点前后2字符内有括号 → 多半是脸的组成部分
+                    # （。゚(ﾟ´Д`ﾟ)ﾟ。首尾的。/(_ _).。o○的睡眠泡泡/词脸组合"おやすみ！(˘ω˘)"）
+                    buf.append(text[i:j])
+                else:
+                    buf.append(text[i:j])
+                    segs.append("".join(buf))
+                    buf = []
+                i = j
+            else:
+                buf.append(ch)
+                i += 1
+        if buf:
+            segs.append("".join(buf))
+        return [s.strip() for s in segs if s.strip()]
 
     @filter.on_decorating_result()
     async def segment_private_reply(self, event: AstrMessageEvent, *args, **kwargs):
@@ -199,11 +296,7 @@ class DafeiyuMergePlugin(Star):
             text = "\n".join((p.text or "") for p in plains).strip()
             if not text:
                 return
-            segs = [
-                t.strip()
-                for t in re.findall(self._SEG_PAT, text, re.DOTALL | re.MULTILINE)
-                if t.strip()
-            ]
+            segs = self._split_segments(text)
             if len(segs) <= 1:
                 return
             others = [c for c in result.chain if not isinstance(c, Plain)]
