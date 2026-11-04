@@ -8,6 +8,7 @@
 - 连发合并轮随 LLM 请求一次性注入"简短回应"提示（可关）——治"你发两条她回六七条"
 - v1.3.0：分段切分括号感知——颜文字 (・_・。)/(？_？) 内部的句末标点不再把脸劈成两段；
   每次私聊请求注入"回复长度纪律"（可关）——治模型被上下文里自己往日长回复锚定
+- v1.4.1：长度纪律改按"平均每行≤12字"触发——他连发短行（总量超12）也要签收式回复
 - 群聊消息直接放行，完全不受影响
 """
 
@@ -190,10 +191,13 @@ class DafeiyuMergePlugin(Star):
             # 规则是软的——上下文里躺着自己几十条长回复时，模型照"范文"学不照规则学
             # （与颜文字锚定同病）；这条每请求在场，跟人设解耦
             if self.len_on and self.len_hint:
-                # v1.4.0 条件注入：只在他这条消息很短（≤12字）时才带长度纪律——
-                # 那才是需要"签收式回复"的时刻；长段（讲正事/认真问）注入既多余又费token
+                # v1.4.0 条件注入：只在他这条消息很短时才带长度纪律——那才是需要
+                # "签收式回复"的时刻；长段（讲正事/认真问）注入既多余又费token
+                # v1.4.1 按行均长判定：他习惯连发短行（"吃了\n我想吃你"总量超12但
+                # 每行才几个字），按总量判会漏掉这类；平均每行≤12字=短消息风格，照样注入
                 _msg = str(event.message_str or "").strip()
-                if len(_msg) <= 12:
+                _lines = [l for l in _msg.splitlines() if l.strip()]
+                if _lines and len("".join(_lines)) / len(_lines) <= 12:
                     req.extra_user_content_parts.append(TextPart(text=self.len_hint).mark_as_temp())
             n = self._merge_counts.pop(umo, 0)
             if n < 2 or not self.compact_on or not self.compact_tpl:
