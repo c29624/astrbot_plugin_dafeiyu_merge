@@ -190,7 +190,11 @@ class DafeiyuMergePlugin(Star):
             # 规则是软的——上下文里躺着自己几十条长回复时，模型照"范文"学不照规则学
             # （与颜文字锚定同病）；这条每请求在场，跟人设解耦
             if self.len_on and self.len_hint:
-                req.extra_user_content_parts.append(TextPart(text=self.len_hint).mark_as_temp())
+                # v1.4.0 条件注入：只在他这条消息很短（≤12字）时才带长度纪律——
+                # 那才是需要"签收式回复"的时刻；长段（讲正事/认真问）注入既多余又费token
+                _msg = str(event.message_str or "").strip()
+                if len(_msg) <= 12:
+                    req.extra_user_content_parts.append(TextPart(text=self.len_hint).mark_as_temp())
             n = self._merge_counts.pop(umo, 0)
             if n < 2 or not self.compact_on or not self.compact_tpl:
                 return
